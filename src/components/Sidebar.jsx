@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from "react";
 
-export default function Sidebar({ onUpdateGeometry }) {
+export default function Sidebar({
+  onUpdateGeometry,
+  onPumpCement,
+  onPumpMudPush,
+}) {
   const [casings, setCasings] = useState([]);
   const [newCasing, setNewCasing] = useState({
     od: "",
@@ -9,26 +13,25 @@ export default function Sidebar({ onUpdateGeometry }) {
     bottom: "",
   });
 
-  const [openHole, setOpenHole] = useState({});
+  const [openHole, setOpenHole] = useState({ size: "", depth: "" });
 
   const [drillPipes, setDrillPipes] = useState([]);
   const [newDP, setNewDP] = useState({ od: "", id: "", length: "" });
 
   // Auto-update geometry
   useEffect(() => {
-    if (casings.length > 0) {
-      const lastCasingBottom = Math.max(...casings.map((c) => c.bottom));
-      const ohDepth =
-        openHole.depth > lastCasingBottom ? openHole.depth : lastCasingBottom;
+    const lastCasingBottom =
+      casings.length > 0 ? Math.max(...casings.map((c) => c.bottom || 0)) : 0;
+    const ohDepth =
+      openHole.depth && openHole.depth > lastCasingBottom
+        ? openHole.depth
+        : lastCasingBottom;
 
-      onUpdateGeometry({
-        casings,
-        openHole: { ...openHole, depth: ohDepth },
-        drillPipes,
-      });
-    } else {
-      onUpdateGeometry({ casings, openHole, drillPipes });
-    }
+    onUpdateGeometry({
+      casings,
+      openHole: { ...openHole, depth: ohDepth },
+      drillPipes,
+    });
   }, [casings, openHole, drillPipes, onUpdateGeometry]);
 
   // --- Casings ---
@@ -38,11 +41,10 @@ export default function Sidebar({ onUpdateGeometry }) {
     setCasings([
       ...casings,
       {
-        ...newCasing,
-        od: parseFloat(newCasing.od),
-        id: parseFloat(newCasing.id),
-        top: parseFloat(newCasing.top),
-        bottom: parseFloat(newCasing.bottom),
+        od: parseFloat(newCasing.od) || 0,
+        id: parseFloat(newCasing.id) || 0,
+        top: parseFloat(newCasing.top) || 0,
+        bottom: parseFloat(newCasing.bottom) || 0,
       },
     ]);
     setNewCasing({ od: "", id: "", top: "", bottom: "" });
@@ -50,13 +52,12 @@ export default function Sidebar({ onUpdateGeometry }) {
 
   const updateCasing = (index, field, value) => {
     const updated = [...casings];
-    updated[index][field] = parseFloat(value);
+    updated[index][field] = parseFloat(value) || 0;
     setCasings(updated);
   };
 
-  const deleteCasing = (index) => {
+  const deleteCasing = (index) =>
     setCasings(casings.filter((_, i) => i !== index));
-  };
 
   // --- Drill Pipes ---
   const addDP = () => {
@@ -64,10 +65,9 @@ export default function Sidebar({ onUpdateGeometry }) {
     setDrillPipes([
       ...drillPipes,
       {
-        ...newDP,
-        od: parseFloat(newDP.od),
-        id: parseFloat(newDP.id),
-        length: parseFloat(newDP.length),
+        od: parseFloat(newDP.od) || 0,
+        id: parseFloat(newDP.id) || 0,
+        length: parseFloat(newDP.length) || 0,
       },
     ]);
     setNewDP({ od: "", id: "", length: "" });
@@ -75,17 +75,25 @@ export default function Sidebar({ onUpdateGeometry }) {
 
   const updateDP = (index, field, value) => {
     const updated = [...drillPipes];
-    updated[index][field] = parseFloat(value);
+    updated[index][field] = parseFloat(value) || 0;
     setDrillPipes(updated);
   };
 
-  const deleteDP = (index) => {
+  const deleteDP = (index) =>
     setDrillPipes(drillPipes.filter((_, i) => i !== index));
+
+  // --- Open Hole ---
+  const handleOpenHoleChange = (field, value) => {
+    setOpenHole((prev) => ({ ...prev, [field]: parseFloat(value) || 0 }));
   };
 
-  // --- Open hole ---
-  const handleOpenHoleChange = (field, value) => {
-    setOpenHole((prev) => ({ ...prev, [field]: parseFloat(value) }));
+  // --- Pumping Controls ---
+  const handlePumpCement = () => {
+    if (onPumpCement) onPumpCement(10); // example: 10 bbl per click
+  };
+
+  const handlePumpMudPush = () => {
+    if (onPumpMudPush) onPumpMudPush(10); // example: 10 bbl per click
   };
 
   return (
@@ -105,38 +113,16 @@ export default function Sidebar({ onUpdateGeometry }) {
         <tbody>
           {casings.map((c, idx) => (
             <tr key={idx}>
-              <td className="border px-1">
-                <input
-                  type="number"
-                  value={c.od}
-                  onChange={(e) => updateCasing(idx, "od", e.target.value)}
-                  className="w-full p-1"
-                />
-              </td>
-              <td className="border px-1">
-                <input
-                  type="number"
-                  value={c.id}
-                  onChange={(e) => updateCasing(idx, "id", e.target.value)}
-                  className="w-full p-1"
-                />
-              </td>
-              <td className="border px-1">
-                <input
-                  type="number"
-                  value={c.top}
-                  onChange={(e) => updateCasing(idx, "top", e.target.value)}
-                  className="w-full p-1"
-                />
-              </td>
-              <td className="border px-1">
-                <input
-                  type="number"
-                  value={c.bottom}
-                  onChange={(e) => updateCasing(idx, "bottom", e.target.value)}
-                  className="w-full p-1"
-                />
-              </td>
+              {["od", "id", "top", "bottom"].map((field) => (
+                <td className="border px-1" key={field}>
+                  <input
+                    type="number"
+                    value={c[field]}
+                    onChange={(e) => updateCasing(idx, field, e.target.value)}
+                    className="w-full p-1"
+                  />
+                </td>
+              ))}
               <td className="border px-1 text-center">
                 <button
                   onClick={() => deleteCasing(idx)}
@@ -150,46 +136,18 @@ export default function Sidebar({ onUpdateGeometry }) {
 
           {/* New casing row */}
           <tr>
-            <td className="border px-1">
-              <input
-                type="number"
-                value={newCasing.od}
-                onChange={(e) =>
-                  setNewCasing({ ...newCasing, od: e.target.value })
-                }
-                className="w-full p-1"
-              />
-            </td>
-            <td className="border px-1">
-              <input
-                type="number"
-                value={newCasing.id}
-                onChange={(e) =>
-                  setNewCasing({ ...newCasing, id: e.target.value })
-                }
-                className="w-full p-1"
-              />
-            </td>
-            <td className="border px-1">
-              <input
-                type="number"
-                value={newCasing.top}
-                onChange={(e) =>
-                  setNewCasing({ ...newCasing, top: e.target.value })
-                }
-                className="w-full p-1"
-              />
-            </td>
-            <td className="border px-1">
-              <input
-                type="number"
-                value={newCasing.bottom}
-                onChange={(e) =>
-                  setNewCasing({ ...newCasing, bottom: e.target.value })
-                }
-                className="w-full p-1"
-              />
-            </td>
+            {["od", "id", "top", "bottom"].map((field) => (
+              <td className="border px-1" key={field}>
+                <input
+                  type="number"
+                  value={newCasing[field]}
+                  onChange={(e) =>
+                    setNewCasing({ ...newCasing, [field]: e.target.value })
+                  }
+                  className="w-full p-1"
+                />
+              </td>
+            ))}
             <td className="border px-1 text-center">—</td>
           </tr>
         </tbody>
@@ -202,8 +160,6 @@ export default function Sidebar({ onUpdateGeometry }) {
       </button>
 
       {/* Open Hole */}
-
-      {/* Open Hole */}
       <h2 className="text-lg font-bold mb-2">Open Hole</h2>
       <label className="block font-medium">Diameter (in)</label>
       <input
@@ -212,7 +168,6 @@ export default function Sidebar({ onUpdateGeometry }) {
         onChange={(e) => handleOpenHoleChange("size", e.target.value)}
         className="border p-1 w-full mb-2"
       />
-
       <label className="block font-medium">Total Depth (m)</label>
       <input
         type="number"
@@ -235,30 +190,16 @@ export default function Sidebar({ onUpdateGeometry }) {
         <tbody>
           {drillPipes.map((dp, idx) => (
             <tr key={idx}>
-              <td className="border px-1">
-                <input
-                  type="number"
-                  value={dp.od}
-                  onChange={(e) => updateDP(idx, "od", e.target.value)}
-                  className="w-full p-1"
-                />
-              </td>
-              <td className="border px-1">
-                <input
-                  type="number"
-                  value={dp.id}
-                  onChange={(e) => updateDP(idx, "id", e.target.value)}
-                  className="w-full p-1"
-                />
-              </td>
-              <td className="border px-1">
-                <input
-                  type="number"
-                  value={dp.length}
-                  onChange={(e) => updateDP(idx, "length", e.target.value)}
-                  className="w-full p-1"
-                />
-              </td>
+              {["od", "id", "length"].map((field) => (
+                <td className="border px-1" key={field}>
+                  <input
+                    type="number"
+                    value={dp[field]}
+                    onChange={(e) => updateDP(idx, field, e.target.value)}
+                    className="w-full p-1"
+                  />
+                </td>
+              ))}
               <td className="border px-1 text-center">
                 <button
                   onClick={() => deleteDP(idx)}
@@ -272,39 +213,42 @@ export default function Sidebar({ onUpdateGeometry }) {
 
           {/* New DP row */}
           <tr>
-            <td className="border px-1">
-              <input
-                type="number"
-                value={newDP.od}
-                onChange={(e) => setNewDP({ ...newDP, od: e.target.value })}
-                className="w-full p-1"
-              />
-            </td>
-            <td className="border px-1">
-              <input
-                type="number"
-                value={newDP.id}
-                onChange={(e) => setNewDP({ ...newDP, id: e.target.value })}
-                className="w-full p-1"
-              />
-            </td>
-            <td className="border px-1">
-              <input
-                type="number"
-                value={newDP.length}
-                onChange={(e) => setNewDP({ ...newDP, length: e.target.value })}
-                className="w-full p-1"
-              />
-            </td>
+            {["od", "id", "length"].map((field) => (
+              <td className="border px-1" key={field}>
+                <input
+                  type="number"
+                  value={newDP[field]}
+                  onChange={(e) =>
+                    setNewDP({ ...newDP, [field]: e.target.value })
+                  }
+                  className="w-full p-1"
+                />
+              </td>
+            ))}
             <td className="border px-1 text-center">—</td>
           </tr>
         </tbody>
       </table>
       <button
         onClick={addDP}
-        className="bg-green-700 text-white px-3 py-1 rounded w-full"
+        className="bg-green-700 text-white px-3 py-1 rounded w-full mb-4"
       >
         Add Pipes
+      </button>
+
+      {/* Pumping Controls */}
+      <h2 className="text-lg font-bold mt-6 mb-2">Pumping</h2>
+      <button
+        onClick={handlePumpCement}
+        className="bg-blue-700 text-white px-3 py-1 rounded w-full mb-2"
+      >
+        Pump Cement
+      </button>
+      <button
+        onClick={handlePumpMudPush}
+        className="bg-light-blue-600 text-white px-3 py-1 rounded w-full"
+      >
+        Pump Mud Push
       </button>
     </div>
   );
