@@ -1,140 +1,161 @@
-// const INCH_TO_M = 0.0254;
-// const M3_TO_BBL = 6.2898;
-
-// export function calculateVolumes(geometry) {
-//   const { casings, openHole, drillPipes } = geometry;
-//   const internalString = drillPipes;
-//   let totalInternal = 0;
-
-//   // --- Internal string volume (m³) ---
-//   internalString.forEach((dp) => {
-//     if (dp.id && dp.length) {
-//       const id_m = dp.id * INCH_TO_M;
-//       totalInternal += Math.PI * (id_m / 2) ** 2 * dp.length;
-//     }
-//   });
-
-//   // --- Liner volume (last internal string) ---
-//   let linerVolume = 0;
-//   if (internalString.length > 0) {
-//     const last = internalString[internalString.length - 1];
-//     if (last.id && last.length) {
-//       const id_m = last.id * INCH_TO_M;
-//       linerVolume = Math.PI * (id_m / 2) ** 2 * last.length;
-//     }
-//   }
-
-//   // --- Well volume without internal string (using casing ID) ---
-//   let wellVolume = 0;
-//   casings.forEach((c) => {
-//     if (c.id && c.top != null && c.bottom != null) {
-//       const id_m = c.id * INCH_TO_M; // use inner diameter
-//       const h = c.bottom - c.top;
-//       wellVolume += Math.PI * (id_m / 2) ** 2 * h;
-//     }
-//   });
-//   if (openHole && openHole.size && openHole.depth) {
-//     const id_m = openHole.size * INCH_TO_M; // open hole diameter
-//     const lastCasingBottom =
-//       casings.length > 0 ? casings[casings.length - 1].bottom : 0;
-//     const h = openHole.depth - lastCasingBottom;
-//     wellVolume += Math.PI * (id_m / 2) ** 2 * h;
-//   }
-
-//   // --- Convert to barrels ---
-//   return {
-//     internalStringVolume: totalInternal * M3_TO_BBL,
-//     linerVolume: linerVolume * M3_TO_BBL,
-//     wellVolume: wellVolume * M3_TO_BBL,
-//     annulusVolume: (wellVolume - totalInternal) * M3_TO_BBL,
-//   };
-// }
-
-// Barrel conversion factor
-const M3_TO_BBL = 6.2898;
 const INCH_TO_M = 0.0254;
+const M3_TO_BBL = 6.2898;
+// precise conversion constant
+const K = (Math.PI / 4) * INCH_TO_M ** 2 * M3_TO_BBL;
 
 /**
- * Volume of a cylinder in bbl
- * @param {number} id - diameter in inches
- * @param {number} length - length in meters
- */
-export function cylinderVolume(id, length) {
-  if (!id || !length) return 0;
-  const radiusM = (id * INCH_TO_M) / 2;
-  const volumeM3 = Math.PI * radiusM ** 2 * length;
-  return volumeM3 * M3_TO_BBL;
-}
-
-/**
- * Casing volume (internal volume only)
- */
-export function getCasingVolume(casing) {
-  return cylinderVolume(casing.id, casing.bottom - casing.top);
-}
-
-/**
- * Drill pipe (internal string) volume
- */
-export function getInternalStringVolume(dp) {
-  return cylinderVolume(dp.id, dp.length);
-}
-
-/**
- * Liner volume = last drill pipe volume
- */
-export function getLinerVolume(drillPipes) {
-  if (!drillPipes?.length) return 0;
-  return getInternalStringVolume(drillPipes[drillPipes.length - 1]);
-}
-
-/**
- * Annulus volume = casing ID volume - internal string OD volume
- */
-export function getAnnulusVolume(casing, dp) {
-  if (!casing) return 0;
-  const casingVol = cylinderVolume(casing.id, casing.bottom - casing.top);
-  const dpVol = dp ? cylinderVolume(dp.od, dp.length) : 0;
-  return Math.max(casingVol - dpVol, 0);
-}
-
-/**
- * Calculate all volumes summary
+ * Calculates well volumes in bbl
  */
 export function calculateVolumes(geometry) {
-  if (!geometry) {
+  if (!geometry)
     return {
+      wellVolume: 0,
+      openHoleVolume: 0,
       internalStringVolume: 0,
       linerVolume: 0,
-      wellVolume: 0,
+      internalStringDisplacement: 0,
       annulusVolume: 0,
     };
+
+  const { casings = [], openHole, drillPipes = [] } = geometry;
+
+  // --- Casing volumes ---
+  const casingVolumes = casings.map((c) => c.id ** 2 * (c.bottom - c.top) * K);
+  const wellVolume = casingVolumes.reduce((sum, v) => sum + v, 0);
+
+  // --- Open hole ---
+  let openHoleVolume = 0;
+  if (openHole?.size && openHole?.depth && casings.length) {
+    const lastCasingBottom = casings[casings.length - 1].bottom;
+    const L_OH = openHole.depth - lastCasingBottom;
+    if (L_OH > 0) {
+      openHoleVolume = openHole.size ** 2 * L_OH * K;
+    }
   }
 
-  const { casings = [], drillPipes = [], openHole } = geometry;
+  const totalWellVolume = wellVolume + openHoleVolume;
 
-  const internalStringVolume = drillPipes.reduce(
-    (sum, dp) => sum + getInternalStringVolume(dp),
+  // --- Drill pipes (internal string) ---
+  const internalStringVolumes = drillPipes.map(
+    (dp) => dp.id ** 2 * dp.length * K
+  );
+  const internalStringVolume = internalStringVolumes.reduce(
+    (sum, v) => sum + v,
     0
   );
 
-  const linerVolume = getLinerVolume(drillPipes);
+  // --- Liner (last DP) ---
+  const linerVolume = drillPipes.length
+    ? drillPipes[drillPipes.length - 1].id ** 2 *
+      drillPipes[drillPipes.length - 1].length *
+      K
+    : 0;
 
-  const wellVolume =
-    casings.reduce((sum, c) => sum + getCasingVolume(c), 0) +
-    (openHole?.size && openHole?.depth
-      ? cylinderVolume(openHole.size, openHole.depth)
-      : 0);
+  // --- Internal string metal displacement ---
+  const internalStringDisplacement = drillPipes
+    .map((dp) => (dp.od ** 2 - dp.id ** 2) * dp.length * K)
+    .reduce((sum, v) => sum + v, 0);
 
-  const annulusVolume = casings.reduce((sum, c, idx) => {
-    const dp = drillPipes[idx];
-    return sum + getAnnulusVolume(c, dp);
-  }, 0);
+  // --- Annulus volume ---
+  const annulusVolume =
+    totalWellVolume -
+    drillPipes
+      .map((dp) => dp.od ** 2 * dp.length * K)
+      .reduce((sum, v) => sum + v, 0);
 
   return {
+    wellVolume: totalWellVolume,
+    openHoleVolume,
     internalStringVolume,
     linerVolume,
-    wellVolume,
+    internalStringDisplacement,
     annulusVolume,
   };
+}
+export function calculateFluidHeights(dp, cementVolume, mudPushVolume) {
+  const K = (Math.PI / 4) * 0.0254 ** 2 * 6.2898; // bbl per m and inch^2
+  const dpVolume = dp.id ** 2 * dp.length * K;
+  const mudVolume = Math.max(dpVolume - cementVolume - mudPushVolume, 0);
+  const hMud = (mudVolume / dpVolume) * dp.length;
+  const hMudPush = (mudPushVolume / dpVolume) * dp.length;
+  const hCement = (cementVolume / dpVolume) * dp.length;
+  return { hMud, hMudPush, hCement };
+}
+
+export function calculateAnnulusFluidHeight(annulusVolume, cementVolume) {
+  const mudVolume = Math.max(annulusVolume - cementVolume, 0);
+  const hCement = cementVolume / annulusVolume;
+  const hMud = mudVolume / annulusVolume;
+  return { hMud, hCement };
+}
+
+/**
+ * Pump fluids down the drill string and into the annulus.
+ * @param {Object} geometry - Well geometry
+ * @param {Object} currentFluid - Current fluid volumes
+ *   { dp: { cement: [], mudPush: [] }, annulus: { cement: 0 } }
+ * @param {Object} pumpVolumes - Volumes to pump in bbl
+ *   { cement: bbl, mudPush: bbl }
+ * @returns {Object} updatedFluidState
+ */
+export function pumpFluids(geometry, currentFluid, pumpVolumes) {
+  const { drillPipes = [], casings = [], openHole } = geometry;
+
+  // Initialize fluid state if missing
+  const fluidState = {
+    dp: drillPipes.map((_) => ({ cement: 0, mudPush: 0 })),
+    annulus: { cement: 0 },
+    ...currentFluid,
+  };
+
+  let cementRemaining = pumpVolumes.cement || 0;
+  let mudPushRemaining = pumpVolumes.mudPush || 0;
+
+  // --- Step 1: Pump cement down drill pipes ---
+  for (let i = 0; i < drillPipes.length; i++) {
+    const dp = drillPipes[i];
+    const dpVolume = dp.id ** 2 * dp.length * K;
+    const filledCement = fluidState.dp[i].cement || 0;
+    const availableSpace =
+      dpVolume - filledCement - (fluidState.dp[i].mudPush || 0);
+
+    const cementToPump = Math.min(availableSpace, cementRemaining);
+    fluidState.dp[i].cement = (fluidState.dp[i].cement || 0) + cementToPump;
+    cementRemaining -= cementToPump;
+
+    if (cementRemaining <= 0) break;
+  }
+
+  // --- Step 2: Pump mud push to push cement down the pipes ---
+  for (let i = 0; i < drillPipes.length; i++) {
+    const dp = drillPipes[i];
+    const dpVolume = dp.id ** 2 * dp.length * K;
+    const filledCement = fluidState.dp[i].cement || 0;
+    const filledMudPush = fluidState.dp[i].mudPush || 0;
+    const availableSpace = dpVolume - filledCement - filledMudPush;
+
+    const mudPushToPump = Math.min(availableSpace, mudPushRemaining);
+    fluidState.dp[i].mudPush = (fluidState.dp[i].mudPush || 0) + mudPushToPump;
+    mudPushRemaining -= mudPushToPump;
+
+    if (mudPushRemaining <= 0) break;
+  }
+
+  // --- Step 3: Move cement into annulus if liner reached ---
+  if (drillPipes.length && cementRemaining <= 0) {
+    const lastDP = drillPipes[drillPipes.length - 1];
+    const linerVolume = lastDP.id ** 2 * lastDP.length * K;
+
+    const annulusVolume = calculateVolumes(geometry).annulusVolume;
+    const cementInAnnulus = Math.min(
+      annulusVolume,
+      fluidState.annulus.cement + fluidState.dp[drillPipes.length - 1].cement
+    );
+    fluidState.annulus.cement = cementInAnnulus;
+
+    // Remove cement from last DP as it enters annulus
+    fluidState.dp[drillPipes.length - 1].cement -= cementInAnnulus;
+  }
+
+  return fluidState;
 }
