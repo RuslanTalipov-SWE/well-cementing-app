@@ -1,21 +1,43 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
-  getCasingVolume,
-  getInternalStringVolume,
-  getAnnulusVolume,
-  cylinderVolume,
+  calculateVolumes,
+  calculateFluidHeights,
+  calculateAnnulusFluidHeight,
 } from "../utils/volumeCalculations";
 
 export default function WellSchematic({ geometry }) {
   if (!geometry) return <div className="p-4">No well data</div>;
 
-  const { casings, openHole, drillPipes } = geometry;
+  const { casings = [], openHole = {}, drillPipes = [] } = geometry;
 
-  // --- Calculate total depth ---
+  // --- Safe number helper ---
+  const toNum = (value) => (isNaN(parseFloat(value)) ? 0 : parseFloat(value));
+
+  // --- Calculate well volumes ---
+  const safeGeometry = {
+    casings: casings.map((c) => ({
+      od: toNum(c.od),
+      id: toNum(c.id),
+      top: toNum(c.top),
+      bottom: toNum(c.bottom),
+    })),
+    openHole: {
+      size: toNum(openHole.size),
+      depth: toNum(openHole.depth),
+    },
+    drillPipes: drillPipes.map((dp) => ({
+      od: toNum(dp.od),
+      id: toNum(dp.id),
+      length: toNum(dp.length),
+    })),
+  };
+
+  const volumes = calculateVolumes(safeGeometry);
+
   const totalDepth = Math.max(
-    openHole?.depth || 0,
-    ...casings.map((c) => c.bottom || 0),
-    drillPipes.reduce((sum, dp) => sum + (dp.length || 0), 0)
+    safeGeometry.openHole.depth || 0,
+    ...safeGeometry.casings.map((c) => c.bottom),
+    safeGeometry.drillPipes.reduce((sum, dp) => sum + dp.length, 0)
   );
 
   const paddingTop = 20;
@@ -27,6 +49,50 @@ export default function WellSchematic({ geometry }) {
   const wellWidth = 200;
   const marginLeft = 50;
 
+  // --- Fluid state ---
+  const [fluidState, setFluidState] = useState({
+    dp: {
+      cement: drillPipes.map(() => 0),
+      mudPush: drillPipes.map(() => 0),
+    },
+    annulus: { cement: 0 },
+  });
+
+  // --- Pumping animation ---
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setFluidState((prev) => {
+        const newCement = [...prev.dp.cement];
+        let cementRemaining = 50; // bbl pumped per tick
+
+        for (let i = 0; i < safeGeometry.drillPipes.length; i++) {
+          const dp = safeGeometry.drillPipes[i];
+          const dpVolume =
+            Math.PI * ((dp.id * 0.0254) / 2) ** 2 * dp.length * 6.2898;
+          const available = dpVolume - newCement[i];
+          const added = Math.min(available, cementRemaining);
+          newCement[i] += added;
+          cementRemaining -= added;
+          if (cementRemaining <= 0) break;
+        }
+
+        const annulusCement = Math.max(cementRemaining, 0);
+
+        return {
+          dp: { cement: newCement, mudPush: prev.dp.mudPush },
+          annulus: {
+            cement: Math.min(
+              prev.annulus.cement + annulusCement,
+              volumes.annulusVolume
+            ),
+          },
+        };
+      });
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, [safeGeometry.drillPipes, volumes.annulusVolume]);
+
   let currentDPDepth = 0;
 
   return (
@@ -36,7 +102,7 @@ export default function WellSchematic({ geometry }) {
         height={viewportHeight}
         style={{ border: "1px solid #ccc" }}
       >
-        {/* Vertical axis label */}
+        {/* Depth axis */}
         <text
           x={marginLeft / 4}
           y={viewportHeight / 2}
@@ -50,11 +116,11 @@ export default function WellSchematic({ geometry }) {
           Depth, m
         </text>
 
-        {/* Depth scale ticks */}
+        {/* Depth ticks */}
         {[
           0,
           ...Array.from(
-            { length: Math.ceil(totalDepth / 100) - 1 },
+            { length: Math.ceil(totalDepth / 100) },
             (_, i) => (i + 1) * 100
           ),
           totalDepth,
@@ -83,10 +149,10 @@ export default function WellSchematic({ geometry }) {
         })}
 
         {/* Casings */}
-        {casings.map((c, idx) => {
+        {safeGeometry.casings.map((c, idx) => {
           const y = c.top * scale + paddingTop;
-          const h = (c.bottom - c.top) * scale;
-          const w = c.od * 3;
+          const h = Math.max((c.bottom - c.top) * scale, 1); // minimum height 1
+          const w = Math.max(c.od * 3, 1);
           const x = marginLeft + wellWidth / 2 - w / 2;
 
           return (
@@ -100,97 +166,152 @@ export default function WellSchematic({ geometry }) {
                 stroke="black"
                 strokeWidth="2"
               />
-              <title>
-                Casing {idx + 1} Volume: {getCasingVolume(c).toFixed(2)} bbl
-              </title>
+              <title>{`Casing ${idx + 1} Volume: ${(
+                Math.PI *
+                ((c.id * 0.0254) / 2) ** 2 *
+                (c.bottom - c.top) *
+                6.2898
+              ).toFixed(2)} bbl`}</title>
             </g>
           );
         })}
 
-        {/* Open hole */}
-        {openHole && openHole.size && openHole.depth && (
-          <g>
-            <rect
-              x={marginLeft + wellWidth / 2 - openHole.size * 1.5}
-              y={
-                (Math.max(...casings.map((c) => c.bottom)) || 0) * scale +
-                paddingTop
-              }
-              width={openHole.size * 3}
-              height={
-                (openHole.depth -
-                  (Math.max(...casings.map((c) => c.bottom)) || 0)) *
-                scale
-              }
-              fill="none"
-              stroke="brown"
-              strokeDasharray="4"
-            />
-            <title>
-              Open Hole Volume:{" "}
-              {cylinderVolume(
-                openHole.size,
-                openHole.depth -
-                  (Math.max(...casings.map((c) => c.bottom)) || 0)
-              ).toFixed(2)}{" "}
-              bbl
-            </title>
-          </g>
-        )}
+        {/* Open Hole */}
+        {safeGeometry.openHole.size &&
+          safeGeometry.openHole.depth &&
+          safeGeometry.casings.length > 0 && (
+            <g>
+              <rect
+                x={
+                  marginLeft + wellWidth / 2 - safeGeometry.openHole.size * 1.5
+                }
+                y={
+                  safeGeometry.casings[safeGeometry.casings.length - 1].bottom *
+                    scale +
+                  paddingTop
+                }
+                width={safeGeometry.openHole.size * 3}
+                height={Math.max(
+                  (safeGeometry.openHole.depth -
+                    safeGeometry.casings[safeGeometry.casings.length - 1]
+                      .bottom) *
+                    scale,
+                  1
+                )}
+                fill="blue"
+                fillOpacity="0.2"
+                stroke="brown"
+                strokeDasharray="4"
+              />
+              <title>{`Open Hole Volume: ${volumes.openHoleVolume.toFixed(
+                2
+              )} bbl`}</title>
+            </g>
+          )}
 
-        {/* Internal string + liner */}
-        {drillPipes.map((dp, idx) => {
+        {/* Drill Pipes with fluid layers */}
+        {safeGeometry.drillPipes.map((dp, idx) => {
           const y = currentDPDepth * scale + paddingTop;
-          const h = dp.length * scale;
-          const w = dp.od * 2;
+          const h = Math.max(dp.length * scale, 1);
+          const w = Math.max(dp.od * 2, 1);
           const x = marginLeft + wellWidth / 2 - w / 2;
 
-          const isLiner = idx === drillPipes.length - 1;
-          const fillColor = isLiner
-            ? "rgba(0,0,200,0.5)"
-            : "rgba(0,200,255,0.3)";
-          const strokeColor = isLiner ? "blue" : "lightblue";
-
-          const dpVolumeBbl = getInternalStringVolume(dp).toFixed(2);
+          const { hMud, hMudPush, hCement } = calculateFluidHeights(
+            dp,
+            fluidState.dp.cement[idx],
+            fluidState.dp.mudPush[idx]
+          );
 
           currentDPDepth += dp.length;
 
           return (
             <g key={`dp-${idx}`}>
+              {/* Mud */}
+              <rect
+                x={x}
+                y={y + h - hMud * scale}
+                width={w}
+                height={hMud * scale}
+                fill="blue"
+                fillOpacity="0.3"
+              />
+              {/* Mud push */}
+              <rect
+                x={x}
+                y={y + h - (hMud + hMudPush) * scale}
+                width={w}
+                height={hMudPush * scale}
+                fill="lightblue"
+              />
+              {/* Cement */}
+              <rect
+                x={x}
+                y={y + h - (hMud + hMudPush + hCement) * scale}
+                width={w}
+                height={hCement * scale}
+                fill="gray"
+              />
+              {/* DP outline */}
               <rect
                 x={x}
                 y={y}
                 width={w}
                 height={h}
-                fill={fillColor}
-                stroke={strokeColor}
+                fill="none"
+                stroke="black"
               />
-              <title>
-                {isLiner
-                  ? `Liner Volume: ${dpVolumeBbl} bbl`
-                  : `Internal String Volume: ${dpVolumeBbl} bbl`}
-              </title>
             </g>
           );
         })}
 
-        {/* Annulus overlay */}
-        {casings.map((c, idx) => {
-          if (drillPipes[idx]) return null; // skip where DP occupies space
-          const y = c.top * scale + paddingTop;
-          const h = (c.bottom - c.top) * scale;
-          const w = c.od * 3;
-          const x = marginLeft + wellWidth / 2 - w / 2;
-          return (
-            <g key={`annulus-${idx}`}>
-              <rect x={x} y={y} width={w} height={h} fill="rgba(200,0,0,0.1)" />
-              <title>
-                Annulus Volume:{" "}
-                {getAnnulusVolume(c, drillPipes[idx]).toFixed(2)} bbl
-              </title>
-            </g>
-          );
-        })}
+        {/* Annulus fluid layers */}
+        {safeGeometry.casings.length > 0 && safeGeometry.openHole.depth > 0 && (
+          <g>
+            {(() => {
+              const { hMud, hCement } = calculateAnnulusFluidHeight(
+                volumes.annulusVolume,
+                fluidState.annulus.cement
+              );
+              const annX =
+                marginLeft +
+                wellWidth / 2 -
+                safeGeometry.casings[safeGeometry.casings.length - 1].od * 1.5;
+              const annY =
+                safeGeometry.casings[safeGeometry.casings.length - 1].bottom *
+                  scale +
+                paddingTop;
+              const annWidth =
+                safeGeometry.casings[safeGeometry.casings.length - 1].od * 3;
+              const annHeight = Math.max(
+                (safeGeometry.openHole.depth -
+                  safeGeometry.casings[safeGeometry.casings.length - 1]
+                    .bottom) *
+                  scale,
+                1
+              );
+
+              return (
+                <>
+                  <rect
+                    x={annX}
+                    y={annY + (annHeight - hMud * scale)}
+                    width={annWidth}
+                    height={hMud * scale}
+                    fill="blue"
+                    fillOpacity="0.3"
+                  />
+                  <rect
+                    x={annX}
+                    y={annY + (annHeight - (hMud + hCement) * scale)}
+                    width={annWidth}
+                    height={hCement * scale}
+                    fill="gray"
+                  />
+                </>
+              );
+            })()}
+          </g>
+        )}
       </svg>
     </div>
   );
