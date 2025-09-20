@@ -1,9 +1,19 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 
+/**
+ * Sidebar: geometry editor + Fluids table + Pumping controls
+ *
+ * Props:
+ *  - onUpdateGeometry({ casings, openHole, drillPipes })
+ *  - onAddFluid({ type, volume })
+ *  - onResetFluids()
+ *  - currentFluids (read-only visualization)
+ */
 export default function Sidebar({
   onUpdateGeometry,
-  onPumpCement,
-  onPumpMudPush,
+  onAddFluid,
+  onResetFluids,
+  currentFluids,
 }) {
   const [casings, setCasings] = useState([]);
   const [newCasing, setNewCasing] = useState({
@@ -18,15 +28,19 @@ export default function Sidebar({
   const [drillPipes, setDrillPipes] = useState([]);
   const [newDP, setNewDP] = useState({ od: "", id: "", length: "" });
 
-  // Auto-update geometry
+  // Fluids table local list (for UI) — we also call onAddFluid to queue
+  const [fluidsList, setFluidsList] = useState([]);
+  const [newFluid, setNewFluid] = useState({ type: "", volume: "" });
+
+  // auto-update geometry upstream
   useEffect(() => {
-    const lastCasingBottom =
-      casings.length > 0 ? Math.max(...casings.map((c) => c.bottom || 0)) : 0;
+    const lastCasingBottom = casings.length
+      ? Math.max(...casings.map((c) => c.bottom || 0))
+      : 0;
     const ohDepth =
       openHole.depth && openHole.depth > lastCasingBottom
         ? openHole.depth
         : lastCasingBottom;
-
     onUpdateGeometry({
       casings,
       openHole: { ...openHole, depth: ohDepth },
@@ -34,67 +48,66 @@ export default function Sidebar({
     });
   }, [casings, openHole, drillPipes, onUpdateGeometry]);
 
-  // --- Casings ---
+  // --- Casings CRUD ---
   const addCasing = () => {
     if (!newCasing.od || !newCasing.id || !newCasing.top || !newCasing.bottom)
       return;
-    setCasings([
-      ...casings,
+    setCasings((s) => [
+      ...s,
       {
-        od: parseFloat(newCasing.od) || 0,
-        id: parseFloat(newCasing.id) || 0,
-        top: parseFloat(newCasing.top) || 0,
-        bottom: parseFloat(newCasing.bottom) || 0,
+        od: +newCasing.od,
+        id: +newCasing.id,
+        top: +newCasing.top,
+        bottom: +newCasing.bottom,
       },
     ]);
     setNewCasing({ od: "", id: "", top: "", bottom: "" });
   };
-
-  const updateCasing = (index, field, value) => {
-    const updated = [...casings];
-    updated[index][field] = parseFloat(value) || 0;
-    setCasings(updated);
+  const updateCasing = (idx, field, value) => {
+    setCasings((prev) => {
+      const copy = prev.slice();
+      copy[idx] = { ...copy[idx], [field]: parseFloat(value) || 0 };
+      return copy;
+    });
   };
+  const deleteCasing = (idx) =>
+    setCasings((prev) => prev.filter((_, i) => i !== idx));
 
-  const deleteCasing = (index) =>
-    setCasings(casings.filter((_, i) => i !== index));
-
-  // --- Drill Pipes ---
+  // --- Drill pipes CRUD ---
   const addDP = () => {
     if (!newDP.od || !newDP.id || !newDP.length) return;
-    setDrillPipes([
-      ...drillPipes,
-      {
-        od: parseFloat(newDP.od) || 0,
-        id: parseFloat(newDP.id) || 0,
-        length: parseFloat(newDP.length) || 0,
-      },
+    setDrillPipes((s) => [
+      ...s,
+      { od: +newDP.od, id: +newDP.id, length: +newDP.length },
     ]);
     setNewDP({ od: "", id: "", length: "" });
   };
-
-  const updateDP = (index, field, value) => {
-    const updated = [...drillPipes];
-    updated[index][field] = parseFloat(value) || 0;
-    setDrillPipes(updated);
+  const updateDP = (idx, field, value) => {
+    setDrillPipes((prev) => {
+      const copy = prev.slice();
+      copy[idx] = { ...copy[idx], [field]: parseFloat(value) || 0 };
+      return copy;
+    });
   };
+  const deleteDP = (idx) =>
+    setDrillPipes((prev) => prev.filter((_, i) => i !== idx));
 
-  const deleteDP = (index) =>
-    setDrillPipes(drillPipes.filter((_, i) => i !== index));
-
-  // --- Open Hole ---
+  // --- Open hole ---
   const handleOpenHoleChange = (field, value) => {
-    setOpenHole((prev) => ({ ...prev, [field]: parseFloat(value) || 0 }));
+    setOpenHole((p) => ({ ...p, [field]: parseFloat(value) || 0 }));
   };
 
-  // --- Pumping Controls ---
-  const handlePumpCement = () => {
-    if (onPumpCement) onPumpCement(10); // example: 10 bbl per click
+  // --- Fluids UI ---
+  const handleAddFluidClick = () => {
+    if (!newFluid.type || !newFluid.volume) return;
+    const f = { type: newFluid.type, volume: parseFloat(newFluid.volume) };
+    setFluidsList((prev) => [...prev, f]);
+    onAddFluid(f);
+    setNewFluid({ type: "", volume: "" });
   };
 
-  const handlePumpMudPush = () => {
-    if (onPumpMudPush) onPumpMudPush(10); // example: 10 bbl per click
-  };
+  // display current fluid state summary (optional)
+  const cur = currentFluids || { dp: [], annulus: [] };
 
   return (
     <div className="w-96 bg-gray-100 p-4 h-screen overflow-y-auto">
@@ -113,12 +126,12 @@ export default function Sidebar({
         <tbody>
           {casings.map((c, idx) => (
             <tr key={idx}>
-              {["od", "id", "top", "bottom"].map((field) => (
-                <td className="border px-1" key={field}>
+              {["od", "id", "top", "bottom"].map((f) => (
+                <td key={f} className="border px-1">
                   <input
                     type="number"
-                    value={c[field]}
-                    onChange={(e) => updateCasing(idx, field, e.target.value)}
+                    value={c[f]}
+                    onChange={(e) => updateCasing(idx, f, e.target.value)}
                     className="w-full p-1"
                   />
                 </td>
@@ -133,16 +146,14 @@ export default function Sidebar({
               </td>
             </tr>
           ))}
-
-          {/* New casing row */}
           <tr>
-            {["od", "id", "top", "bottom"].map((field) => (
-              <td className="border px-1" key={field}>
+            {["od", "id", "top", "bottom"].map((f) => (
+              <td key={f} className="border px-1">
                 <input
                   type="number"
-                  value={newCasing[field]}
+                  value={newCasing[f]}
                   onChange={(e) =>
-                    setNewCasing({ ...newCasing, [field]: e.target.value })
+                    setNewCasing({ ...newCasing, [f]: e.target.value })
                   }
                   className="w-full p-1"
                 />
@@ -190,12 +201,12 @@ export default function Sidebar({
         <tbody>
           {drillPipes.map((dp, idx) => (
             <tr key={idx}>
-              {["od", "id", "length"].map((field) => (
-                <td className="border px-1" key={field}>
+              {["od", "id", "length"].map((f) => (
+                <td key={f} className="border px-1">
                   <input
                     type="number"
-                    value={dp[field]}
-                    onChange={(e) => updateDP(idx, field, e.target.value)}
+                    value={dp[f]}
+                    onChange={(e) => updateDP(idx, f, e.target.value)}
                     className="w-full p-1"
                   />
                 </td>
@@ -210,17 +221,13 @@ export default function Sidebar({
               </td>
             </tr>
           ))}
-
-          {/* New DP row */}
           <tr>
-            {["od", "id", "length"].map((field) => (
-              <td className="border px-1" key={field}>
+            {["od", "id", "length"].map((f) => (
+              <td key={f} className="border px-1">
                 <input
                   type="number"
-                  value={newDP[field]}
-                  onChange={(e) =>
-                    setNewDP({ ...newDP, [field]: e.target.value })
-                  }
+                  value={newDP[f]}
+                  onChange={(e) => setNewDP({ ...newDP, [f]: e.target.value })}
                   className="w-full p-1"
                 />
               </td>
@@ -236,20 +243,89 @@ export default function Sidebar({
         Add Pipes
       </button>
 
-      {/* Pumping Controls */}
-      <h2 className="text-lg font-bold mt-6 mb-2">Pumping</h2>
+      {/* Fluids table */}
+      <h2 className="text-lg font-bold mt-6 mb-2">Fluids</h2>
+      <table className="w-full table-auto border-collapse mb-2 text-sm">
+        <thead>
+          <tr className="bg-gray-200">
+            <th className="border px-2">#</th>
+            <th className="border px-2">Fluid type</th>
+            <th className="border px-2">Volume, bbl</th>
+          </tr>
+        </thead>
+        <tbody>
+          {fluidsList.map((f, idx) => (
+            <tr key={idx}>
+              <td className="border px-1 text-center">{idx + 1}</td>
+              <td className="border px-1">{f.type}</td>
+              <td className="border px-1">{f.volume}</td>
+            </tr>
+          ))}
+
+          {/* input row */}
+          <tr>
+            <td className="border px-1 text-center">
+              {newFluid.type ? fluidsList.length + 1 : ""}
+            </td>
+            <td className="border px-1">
+              <select
+                value={newFluid.type}
+                onChange={(e) =>
+                  setNewFluid({ ...newFluid, type: e.target.value })
+                }
+                className="w-full p-1 border"
+              >
+                <option value="">Select</option>
+                <option value="Cement">Cement</option>
+                <option value="Spacer">Spacer</option>
+                <option value="Mud Push">Mud push</option>
+              </select>
+            </td>
+            <td className="border px-1">
+              <input
+                type="number"
+                value={newFluid.volume}
+                onChange={(e) =>
+                  setNewFluid({ ...newFluid, volume: e.target.value })
+                }
+                className="w-full p-1 border"
+              />
+            </td>
+          </tr>
+        </tbody>
+      </table>
       <button
-        onClick={handlePumpCement}
-        className="bg-blue-700 text-white px-3 py-1 rounded w-full mb-2"
+        onClick={handleAddFluidClick}
+        className="bg-blue-700 text-white px-3 py-1 rounded w-full mb-4"
       >
-        Pump Cement
+        Add Fluid
       </button>
+
+      {/* Reset fluids */}
       <button
-        onClick={handlePumpMudPush}
-        className="bg-light-blue-600 text-white px-3 py-1 rounded w-full"
+        onClick={onResetFluids}
+        className="bg-red-600 text-white px-3 py-1 rounded w-full mb-4"
       >
-        Pump Mud Push
+        Reset Fluids
       </button>
+
+      {/* Current fluid summary (optional) */}
+      {/* <div className="mt-4">
+        <h3 className="font-bold">Current Fluid State</h3>
+        {(currentFluids?.dp || []).map((pipe, i) => (
+          <p key={i}>
+            DP {i + 1}:{" "}
+            {pipe.map((f) => `${f.type}:${f.volume.toFixed(1)}`).join(", ") ||
+              "empty"}
+          </p>
+        ))}
+        <p>
+          Annulus:{" "}
+          {(currentFluids?.annulus || [])
+            .map((f) => `${f.type}:${f.volume.toFixed(1)}`)
+            .join(", ") || "empty"}
+        </p>
+      </div> */}
     </div>
   );
 }
