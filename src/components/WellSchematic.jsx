@@ -1,21 +1,10 @@
 import React from "react";
 import { calculateVolumes, K } from "../utils/volumeCalculations";
 
-/**
- * WellSchematic renders:
- *  - vertical depth axis
- *  - casings (envelope)
- *  - drill pipes stacked from surface down (each pipe draws fluid layers inside)
- *  - annulus fluid stack (bottom->top)
- *
- * fluidState:
- *   dp: [ [ {type,volume} (top->bottom), ... ], ... ]
- *   annulus: [ {type,volume} ... ]  // bottom->top
- */
 const fluidColors = {
-  Cement: "gray",
-  "Mud Push": "lightblue",
-  Spacer: "orange",
+  Cement: "#8b8b8b",
+  "Mud Push": "#9ed7ff",
+  Spacer: "#ffae42",
 };
 
 export default function WellSchematic({ geometry, fluidState }) {
@@ -41,7 +30,6 @@ export default function WellSchematic({ geometry, fluidState }) {
 
   const volumes = calculateVolumes(safeGeometry);
 
-  // total depth: use openHole depth, last casing bottom and sum of drill pipes lengths
   const totalDepth = Math.max(
     safeGeometry.openHole.depth || 0,
     ...(safeGeometry.casings.length
@@ -50,26 +38,24 @@ export default function WellSchematic({ geometry, fluidState }) {
     safeGeometry.drillPipes.reduce((s, dp) => s + (dp.length || 0), 0)
   );
 
-  const paddingTop = 20;
-  const paddingBottom = 20;
+  const paddingTop = 20,
+    paddingBottom = 20;
   const viewportHeight = window.innerHeight - 100;
   const scale =
     (viewportHeight - paddingTop - paddingBottom) / (totalDepth || 1);
 
-  const wellWidth = 200;
-  const marginLeft = 50;
+  const wellWidth = 200,
+    marginLeft = 50;
 
-  // fluid arrays
-  const dpFluids = fluidState?.dp || []; // top->bottom per pipe
-  const annulusFluids = fluidState?.annulus || []; // bottom->top
+  const dpFluids = fluidState?.dp || []; // top -> bottom per pipe
+  const annulusFluids = fluidState?.annulus || []; // bottom -> top
 
   let currentDPDepth = 0;
 
-  // depth ticks
   const depthTicks = [
     0,
     ...Array.from(
-      { length: Math.max(0, Math.ceil(totalDepth / 100)) },
+      { length: Math.ceil(totalDepth / 100) },
       (_, i) => (i + 1) * 100
     ),
     totalDepth,
@@ -82,7 +68,7 @@ export default function WellSchematic({ geometry, fluidState }) {
         height={viewportHeight}
         style={{ border: "1px solid #ccc" }}
       >
-        {/* vertical axis */}
+        {/* Depth axis */}
         <line
           x1={marginLeft}
           y1={paddingTop}
@@ -99,31 +85,27 @@ export default function WellSchematic({ geometry, fluidState }) {
         >
           Depth, m
         </text>
+        {depthTicks.map((d, i) => (
+          <g key={i}>
+            <line
+              x1={marginLeft - 5}
+              x2={marginLeft + 5}
+              y1={d * scale + paddingTop}
+              y2={d * scale + paddingTop}
+              stroke="black"
+            />
+            <text
+              x={marginLeft - 10}
+              y={d * scale + paddingTop + 3}
+              fontSize="10"
+              textAnchor="end"
+            >
+              {Math.round(d)}
+            </text>
+          </g>
+        ))}
 
-        {depthTicks.map((d, i) => {
-          const y = d * scale + paddingTop;
-          return (
-            <g key={`tick-${i}`}>
-              <line
-                x1={marginLeft - 5}
-                x2={marginLeft + 5}
-                y1={y}
-                y2={y}
-                stroke="black"
-              />
-              <text
-                x={marginLeft - 10}
-                y={y + 3}
-                fontSize="10"
-                textAnchor="end"
-              >
-                {Math.round(d)}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* casings (drawn as cylinders) */}
+        {/* Casings */}
         {safeGeometry.casings.map((c, idx) => {
           const y = c.top * scale + paddingTop;
           const h = Math.max((c.bottom - c.top) * scale, 1);
@@ -144,41 +126,37 @@ export default function WellSchematic({ geometry, fluidState }) {
           );
         })}
 
-        {/* drill pipes and fluids inside */}
+        {/* Drill Pipes (draw top -> bottom) */}
         {safeGeometry.drillPipes.map((dp, idx) => {
           const y = currentDPDepth * scale + paddingTop;
           const h = Math.max(dp.length * scale, 1);
           const w = Math.max(dp.od * 2, 1);
           const x = marginLeft + wellWidth / 2 - w / 2;
 
-          // fluids stack drawing: dpFluids is TOP -> BOTTOM; draw bottom->top
-          const pipeParcels = dpFluids[idx] || [];
-          let fluidY = y + h; // start from bottom
+          const pipeFluids = dpFluids[idx] || []; // top->bottom
+          const dpVol = dp.id ** 2 * (dp.length || 0) * K;
 
-          // iterate from bottommost to topmost
-          const rects = [];
-          for (let j = pipeParcels.length - 1; j >= 0; j--) {
-            const p = pipeParcels[j];
-            const dpVol = dp.id ** 2 * (dp.length || 0) * K || 1;
-            const rectHeight = ((p.volume || 0) / dpVol) * h;
-            // protect against tiny negative/NaN
-            const hRect = Math.max(0, rectHeight || 0);
-            fluidY -= hRect;
-            rects.push(
+          // draw from top to bottom
+          let fluidY = y;
+          const rects = pipeFluids.map((f, i) => {
+            const rectH = dpVol > 0 ? (f.volume / dpVol) * h : 0;
+            const r = (
               <rect
-                key={`dp-${idx}-p-${j}`}
+                key={i}
                 x={x}
                 y={fluidY}
                 width={w}
-                height={hRect}
-                fill={fluidColors[p.type] || "gray"}
-                fillOpacity={p.type === "Mud Push" ? 0.4 : 1}
-                stroke="none"
+                height={rectH}
+                fill={fluidColors[f.type] || "gray"}
+                fillOpacity={f.type === "Mud Push" ? 0.35 : 1}
               />
             );
-          }
+            fluidY += rectH;
+            return r;
+          });
 
           currentDPDepth += dp.length;
+
           return (
             <g key={`dp-${idx}`}>
               {rects}
@@ -194,7 +172,7 @@ export default function WellSchematic({ geometry, fluidState }) {
           );
         })}
 
-        {/* annulus: bottom -> top (annulusFluids is stored bottom->top) */}
+        {/* Annulus (bottom -> top) */}
         {safeGeometry.casings.length > 0 &&
           safeGeometry.openHole.depth > 0 &&
           (() => {
@@ -202,29 +180,25 @@ export default function WellSchematic({ geometry, fluidState }) {
               safeGeometry.casings[safeGeometry.casings.length - 1];
             const annX = marginLeft + wellWidth / 2 - lastCasing.od * 1.5;
             const annY = lastCasing.bottom * scale + paddingTop;
-            const annWidth = lastCasing.od * 3;
             const annHeight = Math.max(
               (safeGeometry.openHole.depth - lastCasing.bottom) * scale,
               1
             );
+            const annVol = volumes.annulusVolume || 1e-9;
 
-            let fluidY = annY + annHeight;
-
+            let fluidY = annY + annHeight; // start from bottom
             return annulusFluids.map((f, i) => {
-              const rectHeight =
-                ((f.volume || 0) / (volumes.annulusVolume || 1)) * annHeight;
-              const hRect = Math.max(0, rectHeight || 0);
-              fluidY -= hRect;
+              const rectH = (f.volume / annVol) * annHeight;
+              fluidY -= rectH;
               return (
                 <rect
-                  key={`ann-${i}`}
+                  key={i}
                   x={annX}
                   y={fluidY}
-                  width={annWidth}
-                  height={hRect}
+                  width={lastCasing.od * 3}
+                  height={rectH}
                   fill={fluidColors[f.type] || "gray"}
-                  fillOpacity={f.type === "Mud Push" ? 0.4 : 1}
-                  stroke="none"
+                  fillOpacity={f.type === "Mud Push" ? 0.35 : 1}
                 />
               );
             });
