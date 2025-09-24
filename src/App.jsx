@@ -1,15 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useEffect } from "react";
 import Sidebar from "./components/Sidebar";
 import WellSchematic from "./components/WellSchematic";
 import { calculateVolumes, K } from "./utils/volumeCalculations";
 
-/**
- * App: orchestrates geometry, queue of fluids to pump, and animated fluidState
- *
- * fluidState:
- *   dp: [ [ {type, volume}, ... ], ... ]   // each DP: top->bottom parcels
- *   annulus: [ {type, volume}, ... ]       // bottom->top parcels
- */
 export default function App() {
   const [geometry, setGeometry] = useState({
     casings: [],
@@ -17,87 +10,72 @@ export default function App() {
     drillPipes: [],
   });
 
-  // fluid state
-  const [fluidState, setFluidState] = useState({
-    dp: [],
-    annulus: [],
-  });
+  // dp: array of arrays; each pipe => array of segments { type, volume } top -> bottom
+  // annulus: array of segments { type, volume } bottom -> top
+  const [fluidState, setFluidState] = useState({ dp: [], annulus: [] });
+  const [fluidsQueue, setFluidsQueue] = useState([]); // queued fluids { type, volume }
 
-  // queue of fluids user added in Sidebar (each item { type, volume })
-  const [fluidsQueue, setFluidsQueue] = useState([]);
-
-  // ensure fluidState.dp array length matches number of drill pipes
+  // Keep fluidState shape consistent when # of drill pipes changes
   useEffect(() => {
-    const n = geometry.drillPipes.length || 0;
+    const n = geometry.drillPipes.length;
     setFluidState((prev) => {
-      // if count match keep current state (so we don't wipe on unrelated updates)
-      if ((prev.dp || []).length === n) return prev;
-      // otherwise reset dp arrays and annulus
+      if (prev.dp && prev.dp.length === n) return prev;
       return {
-        dp: new Array(n).fill(null).map(() => []), // each pipe: [] top->bottom
-        annulus: [], // bottom->top
+        dp: new Array(n).fill(null).map(() => []),
+        annulus: [],
       };
     });
   }, [geometry.drillPipes.length]);
 
-  // pump queue handler: whenever queue gets an item, pump them sequentially
+  // Process queue sequentially: pump each added fluid to completion
   useEffect(() => {
     if (!fluidsQueue.length) return;
-
     let cancelled = false;
 
     const runQueue = async () => {
-      while (!cancelled && fluidsQueue.length > 0) {
-        // pick first
-        const fluid = fluidsQueue[0];
-        try {
-          // await animation (fills/flows fluid fully)
-          await animateFluid(fluid.type, fluid.volume);
-        } catch (err) {
-          console.error("animateFluid error:", err);
-        }
-        // remove first (we must use state setter to keep in sync)
-        setFluidsQueue((prev) => prev.slice(1));
-        // wait a short moment between fluids to make stacking visually distinct
-        // (optional; can be removed)
-        await new Promise((r) => setTimeout(r, 50));
+      while (!cancelled && fluidsQueue.length) {
+        const next = fluidsQueue[0];
+        // animate that single fluid completely
+        // eslint-disable-next-line no-await-in-loop
+        await animateFluid(next.type, next.volume);
+        setFluidsQueue((q) => q.slice(1));
+        // small pause to allow render update
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 20));
       }
     };
 
     runQueue();
-
     return () => {
       cancelled = true;
     };
-  }, [fluidsQueue, geometry]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fluidsQueue]);
 
   /**
-   * animateFluid: pumps a certain totalVolume (bbl) of given type from surface downwards,
-   * moving fluids down the drill string, into liner (last DP), then into annulus (bottom->top).
+   * animateFluid
+   * Pump `totalVolume` bbl of `type` from surface down drill string at `rate` bbl/tick.
+   * Each tick:
+   *  - add step to top of pipe0
+   *  - propagate overflow from bottom of pipe i -> top of pipe i+1
+   *  - overflow from last pipe -> annulus (bottom)
    *
-   * Behavior:
-   * - Each animation tick we add 'step' bbl at surface (top of dp[0]).
-   * - After adding we rebalance pipes left->right moving overflow from bottom of each pipe to top of next.
-   * - Overflow from last pipe goes into annulus (unshift => bottom).
-   *
-   * Returns a Promise that resolves when the full `totalVolume` has been pumped.
+   * Returns a Promise resolved when the full volume is pumped.
    */
   const animateFluid = (type, totalVolume, rate = 5) => {
     return new Promise((resolve) => {
-      if (!totalVolume || totalVolume <= 0) {
-        resolve();
-        return;
-      }
-
       let remaining = totalVolume;
       const n = geometry.drillPipes.length;
 
-      // if no drill pipes exist, deposit directly to annulus
       if (n === 0) {
+        // If no drill pipe, everything goes directly to annulus
         setFluidState((prev) => {
-          const ann = [...(prev.annulus || [])];
-          ann.unshift({ type, volume: remaining });
-          return { dp: prev.dp || [], annulus: ann };
+          const newAnn = [...(prev.annulus || [])];
+          newAnn.push({ type, volume: totalVolume });
+          return {
+            dp: prev.dp || [],
+            annulus: compressSegmentsBottomToTop(newAnn),
+          };
         });
         resolve();
         return;
@@ -113,100 +91,129 @@ export default function App() {
         const step = Math.min(remaining, rate);
         remaining -= step;
 
-        // functional update: compute new dp & annulus arrays
         setFluidState((prev) => {
-          // ensure we have dp arrays for each pipe
-          const prevDp = prev.dp || new Array(n).fill(null).map(() => []);
-          const newDp = prevDp.map((arr) => arr.slice()); // shallow copy arrays
+          // clone dp arrays
+          const newDP = (prev.dp || []).map((pipe) =>
+            (pipe || []).map((seg) => ({ type: seg.type, volume: seg.volume }))
+          );
+          const newAnn = (prev.annulus || []).map((seg) => ({
+            type: seg.type,
+            volume: seg.volume,
+          }));
 
-          // add new parcel at the top of the first pipe
-          // pre-create parcel and add to start of dp[0]
-          newDp[0].unshift({ type, volume: step });
+          // 1) Add `step` to the TOP of pipe 0 (unshift)
+          pushSegmentToPipeTop(newDP, 0, { type, volume: step });
 
-          // rebalance: left -> right
-          for (let i = 0; i < n; i++) {
-            const dpGeom = geometry.drillPipes[i];
-            const dpVol = dpGeom.id ** 2 * (dpGeom.length || 0) * K; // bbl
-            // compute total used in this pipe
-            let used = newDp[i].reduce((s, p) => s + (p.volume || 0), 0);
+          // 2) For each pipe top->bottom ensure capacity and move overflow to next pipe top (or annulus)
+          for (let idx = 0; idx < n; idx++) {
+            const dp = geometry.drillPipes[idx];
+            const dpVol = dp.id ** 2 * (dp.length || 0) * K;
+            let used = newDP[idx].reduce((s, f) => s + f.volume, 0);
 
-            if (used <= dpVol + 1e-9) {
-              // within capacity
-              continue;
+            if (used <= dpVol + 1e-9) continue; // no overflow
+
+            let overflow = used - dpVol;
+            const poppedSegments = [];
+
+            // Remove overflow from bottom (pop segments)
+            while (overflow > 1e-9 && newDP[idx].length > 0) {
+              const last = newDP[idx][newDP[idx].length - 1];
+              if (last.volume > overflow + 1e-9) {
+                // split
+                last.volume = last.volume - overflow;
+                poppedSegments.push({ type: last.type, volume: overflow });
+                overflow = 0;
+                break;
+              } else {
+                // take whole last
+                const taken = newDP[idx].pop();
+                poppedSegments.push({ type: taken.type, volume: taken.volume });
+                overflow -= taken.volume;
+              }
             }
 
-            // overflow amount that must move to next pipe (or to annulus if last)
-            let overflow = used - dpVol;
-
-            // move overflow from BOTTOM of newDp[i]
-            while (overflow > 1e-9 && newDp[i].length > 0) {
-              const bottomParcel = newDp[i].pop(); // bottommost
-              const bottomVol = bottomParcel.volume || 0;
-
-              if (bottomVol <= overflow + 1e-9) {
-                // move whole parcel
-                const moved = bottomVol;
-                overflow -= moved;
-                if (i < n - 1) {
-                  // into top of next pipe
-                  newDp[i + 1].unshift({
-                    type: bottomParcel.type,
-                    volume: moved,
+            if (poppedSegments.length > 0) {
+              // poppedSegments are in order bottom -> up (first popped is bottommost)
+              if (idx < n - 1) {
+                // move them to top of next pipe in the order they left (arrival order preserved)
+                for (const seg of poppedSegments) {
+                  pushSegmentToPipeTop(newDP, idx + 1, {
+                    type: seg.type,
+                    volume: seg.volume,
                   });
-                } else {
-                  // into annulus (will handle after loop)
-                  // we'll accumulate to tempAnnulus below
-                  prev._annulusOverflow = (prev._annulusOverflow || 0) + moved;
                 }
               } else {
-                // split parcel: keep remainder in current pipe, move part
-                const moveVol = overflow;
-                const remainVol = bottomVol - moveVol;
-                // put remainder back as bottommost
-                newDp[i].push({ type: bottomParcel.type, volume: remainVol });
-                // move the moved portion to next pipe/annulus
-                if (i < n - 1) {
-                  newDp[i + 1].unshift({
-                    type: bottomParcel.type,
-                    volume: moveVol,
-                  });
-                } else {
-                  prev._annulusOverflow =
-                    (prev._annulusOverflow || 0) + moveVol;
+                // last pipe -> push to annulus bottom (push to end of annulus array)
+                for (const seg of poppedSegments) {
+                  newAnn.push({ type: seg.type, volume: seg.volume });
                 }
-                overflow = 0;
               }
-            } // while overflow
-          } // for pipes
-
-          // prepare new annulus: start with previous annulus copy
-          const newAnn = [...(prev.annulus || [])];
-
-          // if we collected annulus overflow in prev._annulusOverflow, add it
-          if (prev._annulusOverflow && prev._annulusOverflow > 0) {
-            // prev._annulusOverflow is bottom-arriving => unshift to make it bottommost
-            newAnn.unshift({ type, volume: prev._annulusOverflow });
-            // clean temporary holder
-            prev._annulusOverflow = 0;
+            }
           }
 
-          return { dp: newDp, annulus: newAnn };
+          // 3) compress adjacent same-type segments for each pipe (top->bottom)
+          for (let pi = 0; pi < newDP.length; pi++) {
+            newDP[pi] = compressSegmentsTopToBottom(newDP[pi]);
+          }
+          const compressedAnn = compressSegmentsBottomToTop(newAnn);
+
+          return { dp: newDP, annulus: compressedAnn };
         });
-      }, 80); // interval ms (adjust to speed up / slow down)
+      }, 80); // tick interval (ms)
     });
   };
 
-  // add fluid to queue (called by Sidebar)
+  // helper: push segment to top of pipe (unshift) merging with top if same type
+  function pushSegmentToPipeTop(dpArray, pipeIndex, segment) {
+    if (!dpArray[pipeIndex]) dpArray[pipeIndex] = [];
+    const top = dpArray[pipeIndex][0];
+    if (top && top.type === segment.type) {
+      // merge into existing top
+      top.volume += segment.volume;
+    } else {
+      dpArray[pipeIndex].unshift({
+        type: segment.type,
+        volume: segment.volume,
+      });
+    }
+  }
+
+  // compress top->bottom segments (array is top->bottom)
+  function compressSegmentsTopToBottom(pipeArr) {
+    if (!pipeArr || pipeArr.length === 0) return [];
+    const out = [];
+    for (const seg of pipeArr) {
+      if (out.length && out[out.length - 1].type === seg.type) {
+        out[out.length - 1].volume += seg.volume;
+      } else {
+        out.push({ type: seg.type, volume: seg.volume });
+      }
+    }
+    return out;
+  }
+
+  // compress annulus bottom->top
+  function compressSegmentsBottomToTop(ann) {
+    if (!ann || ann.length === 0) return [];
+    const out = [];
+    for (const seg of ann) {
+      if (out.length && out[out.length - 1].type === seg.type) {
+        out[out.length - 1].volume += seg.volume;
+      } else {
+        out.push({ type: seg.type, volume: seg.volume });
+      }
+    }
+    return out;
+  }
+
+  // called by Sidebar to queue a fluid to pump
   const handleAddFluid = (fluid) => {
-    // queue the fluid object {type, volume}
-    setFluidsQueue((prev) => [
-      ...prev,
-      { type: fluid.type, volume: fluid.volume },
-    ]);
+    setFluidsQueue((q) => [...q, fluid]);
   };
 
+  // reset fluids and queue
   const handleResetFluids = () => {
-    const n = geometry.drillPipes.length || 0;
+    const n = geometry.drillPipes.length;
     setFluidState({
       dp: new Array(n).fill(null).map(() => []),
       annulus: [],
@@ -239,6 +246,7 @@ export default function App() {
             </p>
           )}
         </div>
+
         <div className="w-64 bg-gray-100 p-4 overflow-auto">
           <h2 className="text-sm font-bold mb-2">Volumes (bbl)</h2>
           <p>Well (no internal string): {volumes.wellVolume.toFixed(2)} bbl</p>
@@ -251,26 +259,17 @@ export default function App() {
           <p>Annulus: {volumes.annulusVolume.toFixed(2)} bbl</p>
 
           <h3 className="text-sm font-bold mt-4 mb-1">Fluid State</h3>
-          {(fluidState.dp || []).map((pipe, i) => (
+          {fluidState.dp.map((pipe, i) => (
             <p key={i}>
               DP {i + 1}:{" "}
-              {pipe.map((f) => `${f.type}:${f.volume.toFixed(1)}`).join(", ")}
+              {pipe.map((f) => `${f.type}:${f.volume.toFixed(2)}`).join(", ")}
             </p>
           ))}
           <p>
             Annulus:{" "}
-            {(fluidState.annulus || [])
-              .map((f) => `${f.type}:${f.volume.toFixed(1)}`)
+            {fluidState.annulus
+              .map((f) => `${f.type}:${f.volume.toFixed(2)}`)
               .join(", ")}
-          </p>
-
-          <h4 className="text-sm font-medium mt-4">Queue</h4>
-          <p>
-            {fluidsQueue.length
-              ? fluidsQueue
-                  .map((f, i) => `${i + 1}. ${f.type} ${f.volume} bbl`)
-                  .join("; ")
-              : "Idle"}
           </p>
         </div>
       </div>
